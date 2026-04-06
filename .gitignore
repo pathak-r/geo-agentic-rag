@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/production/*.xlsx
+data/pdfs/*.pdf
+data/pdfs/*.PDF
+data/faiss_index/
+.DS_Store
+**/.DS_Store
+*.egg-info/
+dist/
+build/
