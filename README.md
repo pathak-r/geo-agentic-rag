@@ -67,7 +67,7 @@ The AI agent decides whether to query production data, search well documents, or
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/geo-agentic-rag.git
+git clone https://github.com/pathak-r/geo-agentic-rag.git
 cd geo-agentic-rag
 
 # Install dependencies
