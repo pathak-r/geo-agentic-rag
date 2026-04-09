@@ -2,25 +2,52 @@
 Geo-Agentic RAG — Subsurface AI Assistant
 Streamlit application for the Volve field production analysis.
 """
+import os
+
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
-from langchain_core.messages import AIMessage, HumanMessage
 
-from src.data_loader import load_daily_production, load_monthly_production, get_well_list, get_well_summary
-from src.anomaly import detect_anomalies
-from src.agent import create_agent
-
-# --- Page Config ---
+# --- Page Config (must be first Streamlit command) ---
 st.set_page_config(
     page_title="Geo-Agentic RAG | Volve Field",
     page_icon="🛢️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def _apply_streamlit_secrets_to_environ() -> None:
+    """Streamlit Community Cloud stores deploy secrets in st.secrets; mirror into os.environ
+    before importing src.config (which reads OPENAI_API_KEY, etc.)."""
+    try:
+        secrets = st.secrets
+    except (FileNotFoundError, RuntimeError, TypeError):
+        return
+    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLM_PROVIDER"):
+        try:
+            if key not in secrets:
+                continue
+            val = secrets[key]
+            if val is None:
+                continue
+            s = str(val).strip()
+            if s:
+                os.environ[key] = s
+        except Exception:
+            continue
+
+
+_apply_streamlit_secrets_to_environ()
+
+from langchain_core.messages import AIMessage, HumanMessage
+
+from src.data_loader import load_daily_production, load_monthly_production, get_well_list, get_well_summary
+from src.anomaly import detect_anomalies
+from src.agent import create_agent
 
 # --- Custom CSS ---
 st.markdown("""

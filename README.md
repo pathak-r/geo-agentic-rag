@@ -77,16 +77,37 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your OpenAI API key
 
-# Place data files
+# Place data files (commit these paths for Streamlit Cloud — see below)
 # - data/production/Volve production data.xlsx
 # - data/pdfs/*.pdf (drilling reports, completion reports)
+# - data/faiss_index/ (after ingest, or build on your machine and push)
 
-# Build the vector index (one-time)
+# Build the vector index (one-time, if not already in repo)
 python ingest.py
 
 # Run the app
 streamlit run app.py
 ```
+
+## Deploy on Streamlit Community Cloud
+
+1. Push this repo to GitHub, including **`data/production/`**, **`data/pdfs/`**, and **`data/faiss_index/`** (run `python ingest.py` locally first if the index is not in git yet). Respect GitHub file-size limits (use [Git LFS](https://git-lfs.com/) if individual files exceed ~50–100&nbsp;MB).
+2. In [Streamlit Community Cloud](https://streamlit.io/cloud), create an app: repository **pathak-r/geo-agentic-rag**, branch **`main`**, main file **`app.py`**.
+3. Under **Advanced settings → Secrets**, paste (replace with your real key):
+
+```toml
+OPENAI_API_KEY = "sk-..."
+```
+
+Optional (defaults to OpenAI if omitted):
+
+```toml
+LLM_PROVIDER = "openai"
+```
+
+If you use **Anthropic** instead, set `LLM_PROVIDER = "anthropic"`, add `ANTHROPIC_API_KEY = "..."`, and ensure **`langchain-anthropic`** is installed (add it to `requirements.txt` or install via Cloud dependencies).
+
+Secrets are copied into the process environment before the app loads `src.config`, so the LangChain/OpenAI clients pick them up the same as a local `.env`.
 
 ## Project Context
 
