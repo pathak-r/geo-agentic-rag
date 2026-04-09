@@ -133,7 +133,7 @@ def create_agent(df: pd.DataFrame) -> AgentExecutor:
     return AgentExecutor(
         agent=agent,
         tools=tools,
-        verbose=True,
+        verbose=False,
         max_iterations=5,
         handle_parsing_errors=True,
         return_intermediate_steps=True,
