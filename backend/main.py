@@ -16,7 +16,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from src.agent import create_agent
@@ -113,8 +113,15 @@ def meta():
     wells: list[str] = _state.get("wells") or []
     min_d = daily["DATEPRD"].min().date().isoformat()
     max_d = daily["DATEPRD"].max().date().isoformat()
+    # Producer wells only (WELL_TYPE == OP and has actual oil production)
+    producer_wells = sorted(
+        daily[
+            daily["WELL_TYPE"].eq("OP") & daily["BORE_OIL_VOL"].gt(0)
+        ]["WELL_NAME"].unique().tolist()
+    )
     return {
         "wells": wells,
+        "producer_wells": producer_wells,
         "date_min": min_d,
         "date_max": max_d,
         "total_wells": len(wells),
@@ -211,6 +218,132 @@ def anomalies(well: Optional[str] = Query(None, description="Substring or exact;
     return {"rows": _df_to_records(adf), "counts": counts}
 
 
+@app.get("/api/comparison")
+def comparison(
+    well_a: str = Query(..., description="First well name"),
+    well_b: str = Query(..., description="Second well name"),
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+):
+    """Side-by-side well comparison: normalised production profiles, decline rates, divergence flags."""
+    daily = _state.get("daily")
+    if daily is None:
+        raise HTTPException(503, detail=_state.get("error") or "Data not loaded")
+
+    def well_series(name: str) -> pd.DataFrame | None:
+        df = _filter_daily(daily, name, start, end)
+        # Only producing days
+        df = df[df["BORE_OIL_VOL"].notna() & (df["BORE_OIL_VOL"] > 0)].copy()
+        if df.empty:
+            return None
+        df = df.sort_values("DATEPRD").reset_index(drop=True)
+        first = df["DATEPRD"].iloc[0]
+        df["day"] = (df["DATEPRD"] - first).dt.days
+        return df
+
+    def well_metrics(df: pd.DataFrame | None) -> dict:
+        if df is None:
+            return {}
+        whp = df["AVG_WHP_P"].replace(0, np.nan).dropna() if "AVG_WHP_P" in df.columns else pd.Series(dtype=float)
+        return {
+            "total_oil_sm3": float(df["BORE_OIL_VOL"].sum()),
+            "production_days": int(len(df)),
+            "avg_water_cut_pct": float(df["WATER_CUT_PCT"].mean()) if "WATER_CUT_PCT" in df.columns else 0.0,
+            "avg_whp": float(whp.mean()) if not whp.empty else None,
+        }
+
+    def exponential_decline(df: pd.DataFrame | None) -> dict | None:
+        """Fit q(t) = qi * e^(-D*t) via log-linear regression."""
+        if df is None or len(df) < 10:
+            return None
+        t = df["day"].values.astype(float)
+        q = df["BORE_OIL_VOL"].values.astype(float)
+        mask = q > 0
+        if mask.sum() < 10:
+            return None
+        log_q = np.log(q[mask])
+        coeffs = np.polyfit(t[mask], log_q, 1)
+        D = max(-coeffs[0], 0.0)   # decline rate per day (force non-negative)
+        qi = float(np.exp(coeffs[1]))
+        # Generate smooth trend curve every 30 days
+        t_trend = np.arange(0, int(t.max()) + 1, 30)
+        q_trend = qi * np.exp(-D * t_trend)
+        trend = [{"day": int(td), "q_trend": round(float(qd), 2)} for td, qd in zip(t_trend, q_trend)]
+        return {
+            "D_per_day": round(D, 6),
+            "D_annual_pct": round(D * 365 * 100, 1),
+            "qi": round(qi, 1),
+            "trend": trend,
+        }
+
+    def build_series(df: pd.DataFrame | None) -> list[dict]:
+        if df is None:
+            return []
+        rows = []
+        for _, r in df.iterrows():
+            whp = r.get("AVG_WHP_P")
+            rows.append({
+                "day": int(r["day"]),
+                "date": str(r["DATEPRD"])[:10],
+                "oil": round(float(r["BORE_OIL_VOL"]), 2),
+                "wc": round(float(r.get("WATER_CUT_PCT") or 0), 2),
+                "whp": round(float(whp), 2) if pd.notna(whp) and float(whp) > 0 else None,
+            })
+        return rows
+
+    def detect_divergence(df_a: pd.DataFrame | None, df_b: pd.DataFrame | None) -> list[dict]:
+        """Flag 30-day bins where oil production or water cut diverge > 1.5 std."""
+        if df_a is None or df_b is None:
+            return []
+        max_day = max(df_a["day"].max(), df_b["day"].max())
+        bins = range(0, int(max_day) + 30, 30)
+        deltas_oil, deltas_wc = [], []
+        records = []
+        for b in bins:
+            a_bin = df_a[(df_a["day"] >= b) & (df_a["day"] < b + 30)]
+            b_bin = df_b[(df_b["day"] >= b) & (df_b["day"] < b + 30)]
+            if a_bin.empty or b_bin.empty:
+                continue
+            d_oil = float(a_bin["BORE_OIL_VOL"].mean()) - float(b_bin["BORE_OIL_VOL"].mean())
+            d_wc = float(a_bin["WATER_CUT_PCT"].mean()) - float(b_bin["WATER_CUT_PCT"].mean()) if "WATER_CUT_PCT" in df_a.columns else 0.0
+            deltas_oil.append(d_oil)
+            deltas_wc.append(d_wc)
+            records.append({"day_start": b, "day_end": b + 30, "d_oil": round(d_oil, 1), "d_wc": round(d_wc, 2)})
+        if not records:
+            return []
+        std_oil = float(np.std(deltas_oil)) if deltas_oil else 1.0
+        std_wc = float(np.std(deltas_wc)) if deltas_wc else 1.0
+        flags = []
+        for rec in records:
+            flagged = []
+            if std_oil > 0 and abs(rec["d_oil"]) > 1.5 * std_oil:
+                flagged.append("oil")
+            if std_wc > 0 and abs(rec["d_wc"]) > 1.5 * std_wc:
+                flagged.append("wc")
+            if flagged:
+                flags.append({**rec, "metrics": flagged})
+        return flags
+
+    df_a = well_series(well_a)
+    df_b = well_series(well_b)
+
+    return {
+        "well_a": {
+            "name": well_a,
+            "series": build_series(df_a),
+            "metrics": well_metrics(df_a),
+            "decline": exponential_decline(df_a),
+        },
+        "well_b": {
+            "name": well_b,
+            "series": build_series(df_b),
+            "metrics": well_metrics(df_b),
+            "decline": exponential_decline(df_b),
+        },
+        "divergence": detect_divergence(df_a, df_b),
+    }
+
+
 class ChatMessageIn(BaseModel):
     role: str
     content: str
@@ -228,29 +361,24 @@ def chat(body: ChatRequest):
         raise HTTPException(503, detail=_state.get("error") or "Agent not available")
     prior = [m.model_dump() for m in body.history]
     lc_history = _history_to_lc(prior)
+    messages = lc_history + [HumanMessage(content=body.message)]
     try:
         result = agent.invoke(
-            {
-                "input": body.message,
-                "chat_history": lc_history,
-            }
+            {"messages": messages},
+            {"recursion_limit": 10},
         )
     except Exception as e:
         raise HTTPException(500, detail=str(e)) from e
-    response = result.get("output", "")
+    # langgraph returns {"messages": [...]} — last message is the AI response
+    last = result.get("messages", [])
+    response = last[-1].content if last else ""
+    # Extract document sources from tool messages if present
     sources = []
-    for step in result.get("intermediate_steps", []) or []:
-        if len(step) < 2:
-            continue
-        action, observation = step[0], step[1]
-        tool = getattr(action, "tool", None)
-        if tool == "search_well_documents" and "Source" in str(observation):
-            sources.append(
-                {
-                    "doc_type": "Well Document",
-                    "excerpt": str(observation)[:400],
-                }
-            )
+    for msg in result.get("messages", []):
+        if hasattr(msg, "name") and msg.name == "search_well_documents":
+            content = str(msg.content)
+            if "Source" in content or len(content) > 50:
+                sources.append({"doc_type": "Well Document", "excerpt": content[:400]})
     return {"response": response, "sources": sources}
 
 
