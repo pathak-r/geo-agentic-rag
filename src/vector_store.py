@@ -19,9 +19,15 @@ def build_faiss_index(documents: List[Dict], embeddings_model) -> None:
     texts = [doc["text"] for doc in documents]
     metadatas = [doc["metadata"] for doc in documents]
 
-    print(f"Generating embeddings for {len(texts)} chunks...")
-    vectors = embeddings_model.embed_documents(texts)
-    vectors_np = np.array(vectors, dtype="float32")
+    # OpenAI caps tokens per request; embed in batches.
+    batch_size = int(os.getenv("EMBED_BATCH_SIZE", "80"))
+    print(f"Generating embeddings for {len(texts)} chunks (batch_size={batch_size})...")
+    parts: list[np.ndarray] = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        vec = embeddings_model.embed_documents(batch)
+        parts.append(np.array(vec, dtype="float32"))
+    vectors_np = np.vstack(parts)
 
     # Build FAISS index
     dimension = vectors_np.shape[1]

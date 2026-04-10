@@ -30,7 +30,13 @@ def extract_metadata_from_filename(filename: str) -> Dict:
     """
     metadata = {"source_file": filename}
 
-    name = filename.replace(".pdf", "").replace(".PDF", "")
+    low = filename.lower()
+    if low.endswith(".pdf.download"):
+        name = filename[: -len(".pdf.download")]
+    elif low.endswith(".pdf"):
+        name = filename[: -4]
+    else:
+        name = filename
 
     # Try to match daily drilling report pattern: 15_9_F_11_2013_03_08
     daily_match = re.match(
@@ -41,6 +47,18 @@ def extract_metadata_from_filename(filename: str) -> Dict:
         year, month, day = daily_match.groups()[1:]
         metadata["well_name"] = f"15/9-F-{well_num}"
         metadata["date"] = f"{year}-{month}-{day}"
+        metadata["doc_type"] = "daily_drilling_report"
+        return metadata
+
+    # Sidetrack daily: 15_9_F_1_C_2014_02_22
+    sidetrack_daily = re.match(
+        r"15_9_F_(\d+)_([A-Z])_(\d{4})_(\d{2})_(\d{2})", name
+    )
+    if sidetrack_daily:
+        well_num, sidetrack = sidetrack_daily.group(1), sidetrack_daily.group(2)
+        y, mo, d = sidetrack_daily.groups()[2:]
+        metadata["well_name"] = f"15/9-F-{well_num} {sidetrack}"
+        metadata["date"] = f"{y}-{mo}-{d}"
         metadata["doc_type"] = "daily_drilling_report"
         return metadata
 
@@ -56,11 +74,15 @@ def extract_metadata_from_filename(filename: str) -> Dict:
         metadata["doc_type"] = "daily_drilling_report"
         return metadata
 
-    # Try completion report pattern
-    comp_match = re.match(r"F(\d+)_COMPLETION", name, re.IGNORECASE)
+    # Completion reports: F11_, F4_, F15D_, etc.
+    comp_match = re.match(r"F(\d+)([A-Z])?_COMPLETION", name, re.IGNORECASE)
     if comp_match:
         well_num = comp_match.group(1)
-        metadata["well_name"] = f"15/9-F-{well_num}"
+        suffix = (comp_match.group(2) or "").upper()
+        if suffix:
+            metadata["well_name"] = f"15/9-F-{well_num} {suffix}"
+        else:
+            metadata["well_name"] = f"15/9-F-{well_num}"
         metadata["doc_type"] = "completion_report"
         return metadata
 
@@ -136,13 +158,19 @@ def process_all_pdfs(pdf_dir: str = None) -> List[Dict]:
         print(f"PDF directory not found: {pdf_dir}")
         return documents
 
-    pdf_files = [f for f in os.listdir(pdf_dir)
-                 if f.lower().endswith(".pdf")]
+    pdf_files = [
+        f
+        for f in os.listdir(pdf_dir)
+        if f.lower().endswith(".pdf") or f.lower().endswith(".pdf.download")
+    ]
 
     print(f"Found {len(pdf_files)} PDF files to process")
 
     for filename in sorted(pdf_files):
         filepath = os.path.join(pdf_dir, filename)
+        if not os.path.isfile(filepath):
+            print(f"  Skip (not a file — remove incomplete .download folder if needed): {filename}")
+            continue
         print(f"  Processing: {filename}")
 
         try:
