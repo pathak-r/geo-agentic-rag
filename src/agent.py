@@ -1,11 +1,10 @@
 """
 Agent Orchestration
-LangChain agent that combines document search with production data tools.
+LangChain agent using langgraph (compatible with langchain 1.x).
 """
 import pandas as pd
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import StructuredTool
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -46,8 +45,6 @@ The reservoir is in the Hugin Formation at approximately 2750-3120m depth.
 """
 
 
-# --- Pydantic models for tool inputs ---
-
 class ProductionQueryInput(BaseModel):
     well_name: str = Field(description="Well name or partial match, e.g. 'F-1' or 'F-11'")
     metric: Optional[str] = Field(default=None, description="Specific metric: BORE_OIL_VOL, BORE_WAT_VOL, WATER_CUT_PCT, AVG_WHP_P, GOR")
@@ -73,12 +70,11 @@ class DocumentSearchInput(BaseModel):
     query: str = Field(description="Natural language query to search well documents")
 
 
-def create_agent(df: pd.DataFrame) -> AgentExecutor:
-    """Create the LangChain agent with all tools."""
+def create_agent(df: pd.DataFrame):
+    """Create the langgraph react agent with all tools."""
     llm = get_chat_llm(temperature=0.0)
     embeddings = get_embeddings()
 
-    # Define tools
     tools = [
         StructuredTool.from_function(
             func=lambda well_name, metric=None, start_date=None, end_date=None:
@@ -119,22 +115,5 @@ def create_agent(df: pd.DataFrame) -> AgentExecutor:
         ),
     ]
 
-    # Create prompt
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        MessagesPlaceholder(variable_name="chat_history", optional=True),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-
-    # Create agent
-    agent = create_openai_tools_agent(llm, tools, prompt)
-
-    return AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=False,
-        max_iterations=5,
-        handle_parsing_errors=True,
-        return_intermediate_steps=True,
-    )
+    agent = create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
+    return agent
