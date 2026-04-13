@@ -7,7 +7,8 @@ import re
 from typing import List, Dict
 from llama_parse import LlamaParse
 from langchain_experimental.text_splitter import SemanticChunker
-from src.config import PDF_DIR, LLAMA_CLOUD_API_KEY
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from src.config import PDF_DIR, LLAMA_CLOUD_API_KEY, MAX_CHUNK_SIZE
 from src.llm import get_embeddings
 
 
@@ -103,6 +104,14 @@ def process_all_pdfs(pdf_dir: str = None) -> List[Dict]:
     embeddings = get_embeddings()
     chunker = SemanticChunker(embeddings)
 
+    # Secondary splitter enforces a hard character ceiling on oversized chunks.
+    # Separators include "|" so Markdown table rows split cleanly.
+    secondary_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=MAX_CHUNK_SIZE,
+        chunk_overlap=150,
+        separators=["\n\n", "\n", "|", " ", ""],
+    )
+
     for filename in sorted(pdf_files):
         filepath = os.path.join(pdf_dir, filename)
         print(f"  Processing: {filename}")
@@ -115,8 +124,20 @@ def process_all_pdfs(pdf_dir: str = None) -> List[Dict]:
                 print(f"    Warning: No text extracted from {filename}")
                 continue
 
-            chunks = chunker.split_text(text)
-            print(f"    Extracted {len(chunks)} chunks")
+            # Pass 1: semantic boundaries
+            semantic_chunks = chunker.split_text(text)
+
+            # Pass 2: enforce hard size ceiling
+            chunks = []
+            for sc in semantic_chunks:
+                if len(sc) > MAX_CHUNK_SIZE:
+                    chunks.extend(secondary_splitter.split_text(sc))
+                else:
+                    chunks.append(sc)
+
+            oversized = sum(1 for sc in semantic_chunks if len(sc) > MAX_CHUNK_SIZE)
+            print(f"    {len(semantic_chunks)} semantic chunks → {len(chunks)} final chunks "
+                  f"({oversized} re-split for exceeding {MAX_CHUNK_SIZE} chars)")
 
             for i, chunk in enumerate(chunks):
                 doc = {
