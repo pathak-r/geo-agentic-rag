@@ -7,6 +7,7 @@ load_dotenv()
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # "openai" or "anthropic"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY", "")
 OPENAI_MODEL = "gpt-4o"
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -21,7 +22,7 @@ FAISS_INDEX_PATH = os.path.join(DATA_DIR, "faiss_index")
 # --- RAG Configuration ---
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
-TOP_K_RESULTS = 5
+TOP_K_RESULTS = 10
 
 # --- Anomaly Detection ---
 ANOMALY_WINDOW = 30  # Rolling window in days

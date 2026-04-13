@@ -182,7 +182,7 @@ def document_search_tool(query: str, embeddings_model) -> str:
         score = result["score"]
 
         formatted.append(f"--- Source {i} [{doc_type} | {well}] (relevance: {score:.2f}) ---")
-        formatted.append(result["text"][:800])  # Limit text length
+        formatted.append(result["text"][:1200])  # Limit text length
         formatted.append("")
 
     return "\n".join(formatted)
