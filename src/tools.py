@@ -7,7 +7,7 @@ import numpy as np
 from typing import Optional
 from src.data_loader import query_production_data
 from src.anomaly import detect_anomalies, get_anomaly_summary
-from src.vector_store import search_documents
+from src.vector_store import search_documents_multi_query
 
 
 def production_query_tool(df: pd.DataFrame, well_name: str,
@@ -168,7 +168,7 @@ def document_search_tool(query: str, embeddings_model) -> str:
     Search well documents (drilling reports, completion reports) for relevant information.
     Returns formatted search results with source citations.
     """
-    results = search_documents(query, embeddings_model)
+    results = search_documents_multi_query(query, embeddings_model)
 
     if not results:
         return "No relevant documents found for this query."

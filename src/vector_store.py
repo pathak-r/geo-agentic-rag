@@ -113,6 +113,75 @@ def load_faiss_index():
     return c["faiss_index"], c["texts"], c["metadatas"]
 
 
+def generate_query_variants(query: str, n_variants: int = 3) -> List[str]:
+    """
+    Use a fast LLM to generate alternative phrasings of the query.
+    Returns the original query plus n_variants alternatives.
+    Using different terminology helps catch chunks that BM25/FAISS would miss
+    due to vocabulary mismatch between user language and document language.
+    """
+    import os
+    from openai import OpenAI
+
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    prompt = (
+        f"Generate {n_variants} alternative phrasings of the following question about "
+        f"oil well operations and drilling data. Use different but equivalent terminology "
+        f"(e.g. 'mud weight' ↔ 'drilling fluid density', 'water cut' ↔ 'water-oil ratio', "
+        f"'completion' ↔ 'well construction'). Output only the questions, one per line, no numbering.\n\n"
+        f"Question: {query}"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=256,
+        )
+        lines = [l.strip() for l in resp.choices[0].message.content.strip().split("\n") if l.strip()]
+        variants = lines[:n_variants]
+    except Exception as e:
+        print(f"[vector_store] Query variant generation failed ({e}); falling back to single query.")
+        variants = []
+
+    return [query] + variants
+
+
+def search_documents_multi_query(
+    query: str, embeddings_model, top_k: int = TOP_K_RESULTS
+) -> List[Dict]:
+    """
+    Multi-query hybrid search.
+    1. Generates alternative phrasings of the query via LLM.
+    2. Runs hybrid BM25+FAISS search for each phrasing.
+    3. Merges all ranked lists via Reciprocal Rank Fusion and deduplicates.
+    """
+    queries = generate_query_variants(query)
+    fetch_k_per_query = max(top_k, 8)
+    rrf_k = 60
+
+    seen: Dict[str, Dict] = {}   # first-120-char key → result dict
+    scores: Dict[str, float] = {}
+
+    for q in queries:
+        results = search_documents(q, embeddings_model, top_k=fetch_k_per_query)
+        for rank, r in enumerate(results):
+            key = r["text"][:120]
+            if key not in seen:
+                seen[key] = r
+            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+
+    merged = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+    results_out: List[Dict] = []
+    for key, rrf_score in merged:
+        entry = dict(seen[key])
+        entry["score"] = rrf_score
+        results_out.append(entry)
+
+    return results_out
+
+
 def search_documents(query: str, embeddings_model, top_k: int = TOP_K_RESULTS) -> List[Dict]:
     """
     Hybrid search: FAISS (semantic) + BM25 (keyword) fused via Reciprocal Rank Fusion.
