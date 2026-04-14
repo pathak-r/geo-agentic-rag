@@ -7,7 +7,8 @@ import numpy as np
 from typing import Optional
 from src.data_loader import query_production_data
 from src.anomaly import detect_anomalies, get_anomaly_summary
-from src.vector_store import search_documents_multi_query
+from src.config import DOC_SEARCH_EXCERPT_CHARS, TOP_K_RESULTS
+from src.vector_store import retrieve_for_chat
 
 
 def production_query_tool(df: pd.DataFrame, well_name: str,
@@ -168,7 +169,7 @@ def document_search_tool(query: str, embeddings_model) -> str:
     Search well documents (drilling reports, completion reports) for relevant information.
     Returns formatted search results with source citations.
     """
-    results = search_documents_multi_query(query, embeddings_model)
+    results = retrieve_for_chat(query, embeddings_model, top_k=TOP_K_RESULTS)
 
     if not results:
         return "No relevant documents found for this query."
@@ -181,8 +182,11 @@ def document_search_tool(query: str, embeddings_model) -> str:
         doc_type = meta.get("doc_type", "Unknown").replace("_", " ").title()
         score = result["score"]
 
-        formatted.append(f"--- Source {i} [{doc_type} | {well}] (relevance: {score:.2f}) ---")
-        formatted.append(result["text"][:1200])  # Limit text length
+        formatted.append(
+            f"--- Source {i} [file={source} | well={well} | type={doc_type}] "
+            f"(relevance: {score:.3f}) ---"
+        )
+        formatted.append(result["text"][:DOC_SEARCH_EXCERPT_CHARS])
         formatted.append("")
 
     return "\n".join(formatted)

@@ -20,11 +20,22 @@ PDF_DIR = os.path.join(DATA_DIR, "pdfs")
 FAISS_INDEX_PATH = os.path.join(DATA_DIR, "faiss_index")
 
 # --- RAG Configuration ---
-CHUNK_SIZE = 1000       # Target size for SemanticChunker (guidance only)
+CHUNK_SIZE = 1000       # SemanticChunker guidance or fixed splitter chunk size
 CHUNK_OVERLAP = 200
-MAX_CHUNK_SIZE = 1500   # Hard ceiling: any chunk larger than this is re-split
-TOP_K_RESULTS = 10
+MAX_CHUNK_SIZE = 1500   # Hard ceiling when using semantic chunking + secondary split
+TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "8"))
+
+# semantic = FAISS only (default). hybrid = BM25 + FAISS + RRF
+RAG_MODE = os.getenv("RAG_MODE", "semantic").strip().lower()
+RAG_MULTI_QUERY = os.getenv("RAG_MULTI_QUERY", "0").strip().lower() in ("1", "true", "yes")
+RAG_MULTI_QUERY_N = int(os.getenv("RAG_MULTI_QUERY_N", "3"))
+RAG_RERANK = os.getenv("RAG_RERANK", "1").strip().lower() in ("1", "true", "yes")
+RAG_RERANK_POOL = int(os.getenv("RAG_RERANK_POOL", "40"))
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "64"))
+# pdf ingest: semantic | fixed
+CHUNK_STRATEGY = os.getenv("CHUNK_STRATEGY", "semantic").strip().lower()
+DOC_SEARCH_EXCERPT_CHARS = int(os.getenv("DOC_SEARCH_EXCERPT_CHARS", "2400"))
 
 # --- Anomaly Detection ---
-ANOMALY_WINDOW = 30  # Rolling window in days
-ANOMALY_THRESHOLD = 2.0  # Standard deviations for anomaly flagging
+ANOMALY_WINDOW = 30
+ANOMALY_THRESHOLD = 2.0

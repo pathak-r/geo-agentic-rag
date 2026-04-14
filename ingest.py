@@ -29,8 +29,9 @@ def main():
     build_faiss_index(documents, embeddings)
 
     print("\n" + "=" * 60)
-    print("Ingestion complete! You can now run the app:")
-    print("  streamlit run app.py")
+    print("Ingestion complete! Run the API (and frontend in dev):")
+    print("  uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000")
+    print("  cd frontend && npm run dev")
     print("=" * 60)
 
 

@@ -1,34 +1,45 @@
 """
 PDF Ingestion Pipeline
-Parses well reports and drilling reports using LlamaParse + SemanticChunker.
+LlamaParse + semantic or fixed-size chunking.
 """
 import os
 import re
-from typing import List, Dict
+from typing import Dict, List
+
 from llama_parse import LlamaParse
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from src.config import PDF_DIR, LLAMA_CLOUD_API_KEY, MAX_CHUNK_SIZE
+
+from src.config import (
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    CHUNK_STRATEGY,
+    LLAMA_CLOUD_API_KEY,
+    MAX_CHUNK_SIZE,
+    PDF_DIR,
+)
 from src.llm import get_embeddings
 
 
 def extract_text_from_pdf(pdf_path: str, parser: LlamaParse) -> str:
-    """Extract structured markdown text from a PDF file using LlamaParse."""
     documents = parser.load_data(pdf_path)
     return "\n\n".join(doc.text for doc in documents)
 
 
 def extract_metadata_from_filename(filename: str) -> Dict:
-    """
-    Extract well name and date from PDF filename.
-    Examples:
-        15_9_F_11_2013_03_08.pdf -> well=15/9-F-11, date=2013-03-08
-        15_9_19_A_1997_07_30.pdf -> well=15/9-19A, date=1997-07-30
-        F12_COMPLETION_REPORT_1.PDF -> well=F-12, type=completion_report
-    """
     metadata = {"source_file": filename}
+    name = re.sub(r"\.(pdf|PDF)(\.download)?$", "", filename, flags=re.IGNORECASE)
 
-    name = filename.replace(".pdf", "").replace(".PDF", "")
+    sidetrack_daily = re.match(
+        r"15_9_F_(\d+)_([A-Z])_(\d{4})_(\d{2})_(\d{2})", name
+    )
+    if sidetrack_daily:
+        well_num, sidetrack = sidetrack_daily.group(1), sidetrack_daily.group(2)
+        y, mo, d = sidetrack_daily.groups()[2:]
+        metadata["well_name"] = f"15/9-F-{well_num} {sidetrack}"
+        metadata["date"] = f"{y}-{mo}-{d}"
+        metadata["doc_type"] = "daily_drilling_report"
+        return metadata
 
     daily_match = re.match(
         r"15_9_F[_-]?(\d+)_(\d{4})_(\d{2})_(\d{2})", name
@@ -52,10 +63,14 @@ def extract_metadata_from_filename(filename: str) -> Dict:
         metadata["doc_type"] = "daily_drilling_report"
         return metadata
 
-    comp_match = re.match(r"F(\d+)_COMPLETION", name, re.IGNORECASE)
+    comp_match = re.match(r"F(\d+)([A-Z])?_COMPLETION", name, re.IGNORECASE)
     if comp_match:
         well_num = comp_match.group(1)
-        metadata["well_name"] = f"15/9-F-{well_num}"
+        letter = comp_match.group(2)
+        if letter:
+            metadata["well_name"] = f"15/9-F-{well_num} {letter}"
+        else:
+            metadata["well_name"] = f"15/9-F-{well_num}"
         metadata["doc_type"] = "completion_report"
         return metadata
 
@@ -80,21 +95,25 @@ def extract_metadata_from_filename(filename: str) -> Dict:
 
 
 def process_all_pdfs(pdf_dir: str = None) -> List[Dict]:
-    """
-    Process all PDFs in the directory.
-    Returns list of {text, metadata} dicts ready for embedding.
-    """
     pdf_dir = pdf_dir or PDF_DIR
-    documents = []
+    documents: List[Dict] = []
 
     if not os.path.exists(pdf_dir):
         print(f"PDF directory not found: {pdf_dir}")
         return documents
 
-    pdf_files = [f for f in os.listdir(pdf_dir)
-                 if f.lower().endswith(".pdf")]
+    pdf_files: List[str] = []
+    for f in sorted(os.listdir(pdf_dir)):
+        low = f.lower()
+        if not (low.endswith(".pdf") or low.endswith(".pdf.download")):
+            continue
+        filepath = os.path.join(pdf_dir, f)
+        if not os.path.isfile(filepath):
+            print(f"  Skip (not a file): {f}")
+            continue
+        pdf_files.append(f)
 
-    print(f"Found {len(pdf_files)} PDF files to process")
+    print(f"Found {len(pdf_files)} PDF files to process (CHUNK_STRATEGY={CHUNK_STRATEGY})")
 
     parser = LlamaParse(
         api_key=LLAMA_CLOUD_API_KEY,
@@ -102,17 +121,25 @@ def process_all_pdfs(pdf_dir: str = None) -> List[Dict]:
         verbose=False,
     )
     embeddings = get_embeddings()
-    chunker = SemanticChunker(embeddings)
 
-    # Secondary splitter enforces a hard character ceiling on oversized chunks.
-    # Separators include "|" so Markdown table rows split cleanly.
+    semantic_chunker = None
+    fixed_splitter = None
     secondary_splitter = RecursiveCharacterTextSplitter(
         chunk_size=MAX_CHUNK_SIZE,
         chunk_overlap=150,
         separators=["\n\n", "\n", "|", " ", ""],
     )
 
-    for filename in sorted(pdf_files):
+    if CHUNK_STRATEGY == "fixed":
+        fixed_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            separators=["\n\n", "\n", "|", " ", ""],
+        )
+    else:
+        semantic_chunker = SemanticChunker(embeddings)
+
+    for filename in pdf_files:
         filepath = os.path.join(pdf_dir, filename)
         print(f"  Processing: {filename}")
 
@@ -124,31 +151,34 @@ def process_all_pdfs(pdf_dir: str = None) -> List[Dict]:
                 print(f"    Warning: No text extracted from {filename}")
                 continue
 
-            # Pass 1: semantic boundaries
-            semantic_chunks = chunker.split_text(text)
-
-            # Pass 2: enforce hard size ceiling
-            chunks = []
-            for sc in semantic_chunks:
-                if len(sc) > MAX_CHUNK_SIZE:
-                    chunks.extend(secondary_splitter.split_text(sc))
-                else:
-                    chunks.append(sc)
-
-            oversized = sum(1 for sc in semantic_chunks if len(sc) > MAX_CHUNK_SIZE)
-            print(f"    {len(semantic_chunks)} semantic chunks → {len(chunks)} final chunks "
-                  f"({oversized} re-split for exceeding {MAX_CHUNK_SIZE} chars)")
+            if CHUNK_STRATEGY == "fixed":
+                assert fixed_splitter is not None
+                chunks = fixed_splitter.split_text(text)
+                print(f"    {len(chunks)} fixed-size chunks")
+            else:
+                assert semantic_chunker is not None
+                semantic_chunks = semantic_chunker.split_text(text)
+                chunks = []
+                for sc in semantic_chunks:
+                    if len(sc) > MAX_CHUNK_SIZE:
+                        chunks.extend(secondary_splitter.split_text(sc))
+                    else:
+                        chunks.append(sc)
+                oversized = sum(1 for sc in semantic_chunks if len(sc) > MAX_CHUNK_SIZE)
+                print(
+                    f"    {len(semantic_chunks)} semantic chunks → {len(chunks)} final "
+                    f"({oversized} re-split >{MAX_CHUNK_SIZE} chars)"
+                )
 
             for i, chunk in enumerate(chunks):
-                doc = {
+                documents.append({
                     "text": chunk,
                     "metadata": {
                         **metadata,
                         "chunk_index": i,
                         "total_chunks": len(chunks),
-                    }
-                }
-                documents.append(doc)
+                    },
+                })
 
         except Exception as e:
             print(f"    Error processing {filename}: {e}")
